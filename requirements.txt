@@ -1,0 +1,7 @@
+# Core (no Azure dependency -- deterministic rule engine + CLI dry-run mode)
+python-dotenv>=1.0.1
+
+# Foundry model gateway used by src/ai_reasoning.py for the AI
+# plausibility-judgment layer (required only when use_ai=True / no --no-ai).
+azure-ai-projects>=1.0.0b9
+azure-identity>=1.19.0

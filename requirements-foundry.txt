@@ -1,0 +1,12 @@
+# Base agent dependencies
+-r requirements.txt
+
+# Foundry Hosted Agent HTTP host (Responses protocol) -- OpenAI-compatible
+# POST /responses, GET/DELETE /responses/{id}, POST /responses/{id}/cancel.
+azure-ai-agentserver-responses==2.1.0
+starlette
+
+# Foundry model gateway (models from the Foundry catalog) + Entra ID auth,
+# used by src/ai_reasoning.py for the AI plausibility-judgment layer.
+azure-identity
+azure-ai-projects
