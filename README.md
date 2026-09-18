@@ -115,9 +115,10 @@ get a response dict back. Two surfaces call it:
 - **`foundry_app.py`** — an OpenAI-compatible **Responses**-protocol HTTP
   host (via `azure-ai-agentserver-responses`) used when this agent is
   deployed as a Microsoft Foundry **Hosted Agent** (see §9). Foundry has no
-  shared filesystem with its caller, so this surface exchanges CSV content
-  as base64 rather than file paths — `src/io_utils.py` is what lets
-  `agent.py` accept either.
+  shared filesystem with its caller, so this surface takes a Blob Storage
+  path or inline base64 content instead of a local file path —
+  `src/storage.py` and `src/io_utils.py` are what let `agent.py` accept
+  any of the three.
 
 Two layers inside `run_validation_agent`, deliberately kept separate and
 independently testable:
@@ -162,6 +163,7 @@ src/
   confidence_scoring.py     Finding list -> posterior ConfidenceScore + verdict
   ai_reasoning.py            Foundry model-gateway call for the AI plausibility layer
   io_utils.py                 CSV read/write helpers (local path or inline base64)
+  storage.py                  Local / Blob storage backend -- "<container>-inbound" -> "<container>-outbound"
 test-data/
   NEO.csv, LAO.csv                     Partial (pre-enrichment) extracts
   FMG NEO Aug 26.csv, FMG LAO Aug 26.csv   Enriched reference extracts (ground truth used to derive the rules)
@@ -356,6 +358,49 @@ what `src/io_utils.py` and `agent.py`'s `return_inline` option exist for.
 
 `GET /readiness` (SDK built-in) and `GET /health` (reports whether the AI
 reasoning layer is configured) are both available for availability checks.
+
+**Blob storage input/output (`fmg-inbound` → `fmg-outbound`).** Set
+`STORAGE_BACKEND=azure_blob` (see `.env.foundry.example`) and `input`/
+`reference` can instead be a bare `"<container>/<blob_name>"` path. The
+validated CSV is written back **automatically** to a container derived
+from the *input* blob's own container, by swapping `inbound` for
+`outbound` — nothing about the destination needs to be named explicitly:
+
+```python
+resp = client.responses.create(model="<agent-name>", input=json.dumps({
+    "dataset_type": "NEO",
+    "input": "fmg-inbound/NEO.csv",
+    "reference": "fmg-inbound/FMG NEO Aug 26.csv",
+}))
+result = json.loads(resp.output_text)
+print(result["output_csv_path"])  # "fmg-outbound/<run_id>/NEO_validated.csv"
+```
+
+This is implemented in `src/storage.py` (`AzureBlobStorage`, mirroring
+this dealer's other Foundry agents' `core/storage.py`):
+
+- `fetch_input()` accepts a full blob URL (with or without a SAS token) or
+  a bare `container/blob` path, downloads it to a local temp file, and —
+  only for the *main* `input` (not `reference`) — records its container
+  name.
+- `write_rows()` derives the output container from that recorded name
+  (`_derive_output_container`: replace the first case-insensitive
+  occurrence of `"inbound"` with `"outbound"`, e.g. `FMG-Inbound` →
+  `FMG-outbound`) and uploads the validated CSV to
+  `<derived-container>/<run_id>/<output_name>`. If the input container
+  doesn't contain `"inbound"` (or the input arrived as `content_base64`,
+  which names no container), it falls back to `OUTPUT_CONTAINER`
+  (default `"outputs"`).
+- Authentication: set `AZURE_STORAGE_CONNECTION_STRING`, or
+  `AZURE_STORAGE_ACCOUNT_URL` with Entra ID (`DefaultAzureCredential` —
+  the Hosted Agent's managed identity in Azure, `az login` locally).
+- `pip install -r requirements-foundry.txt` pulls in `azure-storage-blob`
+  for this backend; it's not part of the base `requirements.txt` since the
+  deterministic-only `--no-ai` local/CLI path never needs it.
+- With `STORAGE_BACKEND` unset (or `"local"`, the default), the exact same
+  request shape works against local files/dirs instead — useful for
+  testing the inbound/outbound naming convention without a real storage
+  account by pointing `LOCAL_OUTPUT_DIR` at a scratch folder.
 
 **Deploy (recommended — azd):**
 ```bash

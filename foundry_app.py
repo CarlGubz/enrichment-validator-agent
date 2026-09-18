@@ -19,6 +19,19 @@ dict, JSON-encoded. Any OpenAI Responses-compatible client can call it, e.g.:
 
     client.responses.create(model="<agent>", input=json.dumps(request_contract))
 
+With STORAGE_BACKEND=azure_blob configured (see src/storage.py,
+.env.foundry.example), `input`/`reference` can be a bare
+"<container>/<blob_name>" path instead of inline content, and the
+validated CSV is written back automatically to the matching "-outbound"
+container -- e.g. input "fmg-inbound/NEO.csv" writes results to
+"fmg-outbound/<run_id>/NEO_validated.csv":
+
+    client.responses.create(model="<agent>", input=json.dumps({
+        "dataset_type": "NEO",
+        "input": "fmg-inbound/NEO.csv",
+        "reference": "fmg-inbound/FMG NEO Aug 26.csv",
+    }))
+
 Deploy (recommended):
     az login
     azd ai agent init      # scaffolds/updates the Foundry agent definition + RBAC

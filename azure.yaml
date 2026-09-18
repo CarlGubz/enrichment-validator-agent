@@ -5,6 +5,14 @@
 # project connection (host: azure.ai.project) and this agent's hosted-agent
 # definition (host: azure.ai.agent) -- see README.md section 9 for the full
 # deploy flow (azd ai agent init, then azd deploy).
+#
+# To enable the "<container>-inbound" -> "<container>-outbound" blob
+# workflow (see src/storage.py and README.md section 9), add under the
+# hosted-agent service's `env:` block once `azd ai agent init` has
+# scaffolded it:
+#   STORAGE_BACKEND: azure_blob
+#   AZURE_STORAGE_ACCOUNT_URL: https://<your-storage-account>.blob.core.windows.net/
+#   OUTPUT_CONTAINER: outputs   # fallback only, used when a container name doesn't end in "-inbound"
 
 requiredVersions:
     azd: '>=1.27.1'
