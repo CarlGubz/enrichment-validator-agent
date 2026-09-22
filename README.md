@@ -148,8 +148,7 @@ agent.py                    Transport-agnostic core: run_validation_agent(reques
 foundry_app.py               Microsoft Foundry Hosted Agent entrypoint (Responses protocol)
 azure.yaml                  azd project file; `azd ai agent init` scaffolds/updates it
 Dockerfile                   linux/amd64 image for a container-based Foundry deploy
-requirements.txt            Base Python dependencies
-requirements-foundry.txt    Base deps + the Foundry Hosted Agent HTTP host
+requirements.txt            All Python dependencies -- the single file both `azd deploy` and Docker install
 .env.example                 Environment variables template (local runs)
 .env.foundry.example         Environment variables template (Foundry-hosted runs)
 BUSINESS_RULES.md          Business rules / validation metrics (read this first)
@@ -239,10 +238,13 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-`azure-ai-projects` and `azure-identity` are only needed if you intend to
-run the AI-reasoning layer against a live Foundry project. The
-deterministic rule engine and `--no-ai` CLI mode have no Azure dependency
-at all.
+`requirements.txt` intentionally installs everything needed for every
+surface (CLI, AI reasoning layer, the Foundry Hosted Agent host, and the
+Blob storage backend) from one file — see the note at the top of that
+file for why it isn't split. None of those packages are *imported* by
+`main.py --no-ai` at runtime (the Azure-dependent modules only import
+their SDKs lazily, inside the functions that use them), so a `--no-ai`
+dry run needs no credentials even though the packages are installed.
 
 To run the AI reasoning layer locally (outside of a Foundry-hosted
 deployment), copy `.env.example` to `.env` and fill in:
@@ -328,7 +330,6 @@ Added for this target:
 |---|---|
 | `foundry_app.py` | Responses-protocol HTTP host wrapping `run_validation_agent`. |
 | `Dockerfile` | linux/amd64 image (Foundry requires x86_64), Python 3.13, runs `python foundry_app.py`. |
-| `requirements-foundry.txt` | Base deps + `azure-ai-agentserver-responses` + `azure-identity`/`azure-ai-projects`. |
 | `azure.yaml` | azd project file; `azd ai agent init` scaffolds/updates it with the Foundry agent definition. |
 | `.env.foundry.example` | Env vars for a local container run against the Foundry gateway. |
 | `.dockerignore` / `.agentignore` | Keep the build context / source-ZIP deploy package clean. |
@@ -394,13 +395,39 @@ this dealer's other Foundry agents' `core/storage.py`):
 - Authentication: set `AZURE_STORAGE_CONNECTION_STRING`, or
   `AZURE_STORAGE_ACCOUNT_URL` with Entra ID (`DefaultAzureCredential` —
   the Hosted Agent's managed identity in Azure, `az login` locally).
-- `pip install -r requirements-foundry.txt` pulls in `azure-storage-blob`
-  for this backend; it's not part of the base `requirements.txt` since the
-  deterministic-only `--no-ai` local/CLI path never needs it.
+- `azure-storage-blob` (this backend's only extra dependency) is already
+  in `requirements.txt` alongside everything else — see the note at the
+  top of that file for why it's one file, not split by surface.
 - With `STORAGE_BACKEND` unset (or `"local"`, the default), the exact same
   request shape works against local files/dirs instead — useful for
   testing the inbound/outbound naming convention without a real storage
   account by pointing `LOCAL_OUTPUT_DIR` at a scratch folder.
+
+**Accepting the upstream enrichment/matching step's handoff payload
+directly.** If whatever runs before this agent (a matching/enrichment
+step, a Logic App) already emits a summary like this —
+
+```json
+{
+  "CorrelationId": "123",
+  "Container": "fmg-outbound",
+  "CsvRows": 9296,
+  "SnowflakeRows": 11514,
+  "MatchedRows": 2406,
+  "ExceptionRows": 6890,
+  "EnrichedFile": "20260917-235351-976c79/NEO_enriched.csv",
+  "ExceptionFile": "20260917-235351-976c79/NEO_exceptions.csv"
+}
+```
+
+— you can pass it to this agent as-is, with no translation step. `agent.py`'s
+`_normalize_request()` derives `input` from `Container` + `EnrichedFile`
+(only when `input` isn't already given explicitly), infers `dataset_type`
+from `"NEO"`/`"LAO"` appearing in `EnrichedFile`'s name, and echoes
+`CorrelationId` back in the response for tracking. `EnrichedFile` is the
+priority artifact — it's what gets fetched and validated; `ExceptionFile`
+and the row-count fields are carried through untouched for traceability
+but are not themselves read or validated by this agent.
 
 **Deploy (recommended — azd):**
 ```bash
@@ -431,6 +458,20 @@ docker push <acr>.azurecr.io/enrichment-validation-agent:latest
 > SDK and tooling are still evolving), and note the Foundry RBAC roles
 > were recently renamed (Foundry User/Owner/Project Manager, formerly
 > Azure AI …).
+
+**Troubleshooting: `ModuleNotFoundError: No module named 'azure.ai.agentserver'`
+after deploy.** This means the environment `foundry_app.py` actually ran in
+never installed `azure-ai-agentserver-responses` — almost always because a
+dependency file with a non-standard name (e.g. a separate
+`requirements-foundry.txt`) was relied on. Azure's remote build (Oryx),
+used by both `azd deploy`'s source-ZIP path and a Docker build, only
+auto-installs a file literally named `requirements.txt` at the project
+root; anything else is silently ignored, no error. That's why this
+project keeps a single `requirements.txt` with everything in it (see the
+note at the top of that file) instead of splitting a "base" file from a
+"Foundry" file. If you hit this again after editing dependencies, check
+that whatever new package you added landed in `requirements.txt` itself,
+not a second file.
 
 ## 10. Extending to a live AMT Snowflake connection
 

@@ -1,7 +1,25 @@
-# Core (no Azure dependency -- deterministic rule engine + CLI dry-run mode)
+# NOTE: everything the deployed agent needs must live in this single file.
+# Azure's remote build (Oryx, used by both `azd deploy`'s source-ZIP path and
+# the Dockerfile below) only auto-installs a file literally named
+# requirements.txt -- a separate requirements-foundry.txt is silently
+# ignored, which previously caused `ModuleNotFoundError: No module named
+# azure.ai.agentserver` in the deployed Hosted Agent. Don't split this again.
+
+# Core -- deterministic rule engine + CLI dry-run mode (--no-ai)
 python-dotenv>=1.0.1
+
+# Foundry Hosted Agent HTTP host (Responses protocol) -- OpenAI-compatible
+# POST /responses, GET/DELETE /responses/{id}, POST /responses/{id}/cancel.
+# Required to import foundry_app.py at all; not needed for main.py --no-ai.
+azure-ai-agentserver-responses==2.1.0
+starlette
 
 # Foundry model gateway used by src/ai_reasoning.py for the AI
 # plausibility-judgment layer (required only when use_ai=True / no --no-ai).
 azure-ai-projects>=1.0.0b9
 azure-identity>=1.19.0
+
+# Blob storage backend (enable when STORAGE_BACKEND=azure_blob) -- lets the
+# agent accept a "<container>/<blob>" input path and write results back to
+# the matching "*-outbound" container. See src/storage.py.
+azure-storage-blob

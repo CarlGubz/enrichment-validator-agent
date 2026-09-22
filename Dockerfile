@@ -9,8 +9,8 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-COPY requirements.txt requirements-foundry.txt ./
-RUN pip install --no-cache-dir -r requirements-foundry.txt
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 

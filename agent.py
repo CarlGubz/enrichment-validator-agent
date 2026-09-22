@@ -28,10 +28,29 @@ writes to "fmg-outbound/<run_id>/<output_name>" -- the container's
 needs to be specified. `output_path` bypasses that and writes to an exact
 local path instead (used by main.py's CLI).
 
+Handoff shape from the upstream enrichment/matching step is also accepted
+directly, with no translation needed by the caller -- _normalize_request()
+below derives this agent's own fields from it:
+{
+  "CorrelationId": "123",                                       # echoed back in the response for tracking
+  "Container": "fmg-outbound",
+  "EnrichedFile": "20260917-235351-976c79/NEO_enriched.csv",     # -> input = "fmg-outbound/20260917-235351-976c79/NEO_enriched.csv"
+  "ExceptionFile": "20260917-235351-976c79/NEO_exceptions.csv",  # not read; carried through for traceability only
+  "CsvRows": 9296, "SnowflakeRows": 11514,                       # informational, not read
+  "MatchedRows": 2406, "ExceptionRows": 6890                     # informational, not read
+}
+An explicit "input" (or "dataset_type") in the same request always wins
+over anything derived from this shape. EnrichedFile is what gets
+validated -- it's the priority artifact from that step; ExceptionFile is
+carried through into the response for traceability but is not itself
+fetched or validated. dataset_type is inferred from "NEO"/"LAO" appearing
+in EnrichedFile's name when not given explicitly.
+
 Response contract:
 {
   "status": "succeeded" | "failed",
   "run_id": "...",
+  "CorrelationId": "...",              # present only when the request included one
   "dataset_type": "...",
   "summary": {"row_count": N, "verdict_counts": {"AUTO_APPROVED": .., "NEEDS_REVIEW": .., "REJECTED": ..}},
   "output_csv_path": "...",            # local path, or "<container>/<blob>" for Blob storage
@@ -72,8 +91,46 @@ def _row_id(row: dict, index: int) -> str:
     return f"{index}:{row.get('AssetName', '')}:{row.get('RegistrationCounter', '')}:{row.get('TaskCounterCode', '')}"
 
 
+def _infer_dataset_type(*names: Optional[str]) -> Optional[str]:
+    haystack = " ".join(n for n in names if n).upper()
+    for candidate in ("NEO", "LAO"):
+        if candidate in haystack:
+            return candidate
+    return None
+
+
+def _normalize_request(request: dict) -> dict:
+    """Accepts either this agent's own snake_case request fields, or the
+    PascalCase handoff shape produced by the upstream enrichment/matching
+    step (CorrelationId/Container/EnrichedFile/...), and fills in this
+    agent's fields from the latter when they aren't already given
+    explicitly. See the module docstring for the exact handoff shape.
+    """
+    req = dict(request)
+
+    correlation_id = req.get("CorrelationId") or req.get("correlation_id")
+    if correlation_id is not None:
+        req.setdefault("correlation_id", correlation_id)
+        req.setdefault("run_id", str(correlation_id))
+
+    if not req.get("input"):
+        container = req.get("Container")
+        enriched_file = req.get("EnrichedFile")
+        if container and enriched_file:
+            req["input"] = f"{container}/{enriched_file}"
+
+    if not req.get("dataset_type"):
+        req["dataset_type"] = req.get("DatasetType") or _infer_dataset_type(
+            req.get("EnrichedFile"), req.get("input") if isinstance(req.get("input"), str) else None
+        )
+
+    return req
+
+
 def run_validation_agent(request: dict) -> dict:
+    request = _normalize_request(request)
     run_id = request.get("run_id") or _default_run_id()
+    correlation_id = request.get("correlation_id")
     dataset_type = request.get("dataset_type")
 
     try:
@@ -143,6 +200,8 @@ def run_validation_agent(request: dict) -> dict:
             "dataset_type": dataset_type,
             "summary": {"row_count": len(output_rows), "verdict_counts": verdict_counts},
         }
+        if correlation_id is not None:
+            response["CorrelationId"] = correlation_id
 
         output_path = request.get("output_path")
         if output_path:
@@ -160,9 +219,12 @@ def run_validation_agent(request: dict) -> dict:
         return response
 
     except Exception as exc:  # surface a clean error to the caller
-        return {
+        error_response = {
             "status": "failed",
             "run_id": run_id,
             "dataset_type": dataset_type,
             "error": f"{type(exc).__name__}: {exc}",
         }
+        if correlation_id is not None:
+            error_response["CorrelationId"] = correlation_id
+        return error_response
