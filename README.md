@@ -162,7 +162,7 @@ src/
   confidence_scoring.py     Finding list -> posterior ConfidenceScore + verdict
   ai_reasoning.py            Foundry model-gateway call for the AI plausibility layer
   io_utils.py                 CSV read/write helpers (local path or inline base64)
-  storage.py                  Local / Blob storage backend -- "<container>-inbound" -> "<container>-outbound"
+  storage.py                  Local / Blob storage backend -- writes "<dataset_type>_final.csv" alongside the input
 test-data/
   NEO.csv, LAO.csv                     Partial (pre-enrichment) extracts
   FMG NEO Aug 26.csv, FMG LAO Aug 26.csv   Enriched reference extracts (ground truth used to derive the rules)
@@ -266,7 +266,7 @@ python main.py \
   --input "test-data/NEO.csv" \
   --reference "test-data/FMG NEO Aug 26.csv" \
   --dataset-type NEO \
-  --output out/NEO_validated.csv \
+  --output out/NEO_final.csv \
   --no-ai
 ```
 
@@ -277,7 +277,7 @@ python main.py \
   --input "test-data/FMG NEO Aug 26.csv" \
   --reference "test-data/FMG NEO Aug 26.csv" \
   --dataset-type NEO \
-  --output out/NEO_validated.csv \
+  --output out/NEO_final.csv \
   --batch-size 20
 ```
 
@@ -360,21 +360,21 @@ what `src/io_utils.py` and `agent.py`'s `return_inline` option exist for.
 `GET /readiness` (SDK built-in) and `GET /health` (reports whether the AI
 reasoning layer is configured) are both available for availability checks.
 
-**Blob storage input/output (`fmg-inbound` → `fmg-outbound`).** Set
+**Blob storage input/output (same directory, final filename).** Set
 `STORAGE_BACKEND=azure_blob` (see `.env.foundry.example`) and `input`/
 `reference` can instead be a bare `"<container>/<blob_name>"` path. The
-validated CSV is written back **automatically** to a container derived
-from the *input* blob's own container, by swapping `inbound` for
-`outbound` — nothing about the destination needs to be named explicitly:
+validated CSV is written back **automatically** into the *same blob
+directory* the input came from, as `"<dataset_type>_final.csv"` — nothing
+about the destination needs to be named explicitly:
 
 ```python
 resp = client.responses.create(model="<agent-name>", input=json.dumps({
     "dataset_type": "NEO",
-    "input": "fmg-inbound/NEO.csv",
+    "input": "fmg-outbound/20260917-235351-976c79/NEO_enriched.csv",
     "reference": "fmg-inbound/FMG NEO Aug 26.csv",
 }))
 result = json.loads(resp.output_text)
-print(result["output_csv_path"])  # "fmg-outbound/<run_id>/NEO_validated.csv"
+print(result["output_csv_path"])  # "fmg-outbound/20260917-235351-976c79/NEO_final.csv"
 ```
 
 This is implemented in `src/storage.py` (`AzureBlobStorage`, mirroring
@@ -383,15 +383,27 @@ this dealer's other Foundry agents' `core/storage.py`):
 - `fetch_input()` accepts a full blob URL (with or without a SAS token) or
   a bare `container/blob` path, downloads it to a local temp file, and —
   only for the *main* `input` (not `reference`) — records its container
-  name.
-- `write_rows()` derives the output container from that recorded name
-  (`_derive_output_container`: replace the first case-insensitive
-  occurrence of `"inbound"` with `"outbound"`, e.g. `FMG-Inbound` →
-  `FMG-outbound`) and uploads the validated CSV to
-  `<derived-container>/<run_id>/<output_name>`. If the input container
-  doesn't contain `"inbound"` (or the input arrived as `content_base64`,
-  which names no container), it falls back to `OUTPUT_CONTAINER`
-  (default `"outputs"`).
+  and blob "directory" (everything between the container and the
+  filename).
+- `write_rows()` uploads the validated CSV into that same recorded
+  directory, under the requested `output_name` (default
+  `"<dataset_type>_final.csv"`, e.g. `NEO_final.csv` / `LAO_final.csv`) —
+  there is no separate run-id subfolder for the output. The **container**
+  it writes to is derived separately (`_derive_output_container`):
+  - If the input container's name contains `"inbound"` (case-insensitive),
+    that's replaced with `"outbound"` — e.g. `FMG-Inbound` → `FMG-outbound`.
+  - Otherwise, if the input container is known but doesn't match that
+    pattern — e.g. this agent was handed a file that already lives in
+    `fmg-outbound`, written there by an upstream enrichment/matching step
+    — results are written back into that **same** container. (An earlier
+    version of this fell back to `OUTPUT_CONTAINER` here instead, which
+    caused a "the specified container does not exist" error whenever that
+    fallback container hadn't actually been created — don't reintroduce
+    that fallback for this branch.)
+  - Only when the input container is unknown at all (the input arrived as
+    `content_base64`, which names no container) does it fall back to
+    `OUTPUT_CONTAINER` (default `"outputs"`) — make sure that container
+    actually exists in your storage account if you rely on this path.
 - Authentication: set `AZURE_STORAGE_CONNECTION_STRING`, or
   `AZURE_STORAGE_ACCOUNT_URL` with Entra ID (`DefaultAzureCredential` —
   the Hosted Agent's managed identity in Azure, `az login` locally).

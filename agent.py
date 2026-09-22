@@ -12,20 +12,24 @@ optional):
   "reference": "fmg-inbound/FMG NEO Aug 26.csv" | {"path": "..."} | {"content_base64": "...", "filename": "..."},   # optional -- enables BR-26..BR-28
   "use_ai": true,                      # set false to score with deterministic rules only
   "batch_size": 20,                    # rows per AI reasoning call
-  "output_name": "NEO_validated.csv",  # optional -- output file/blob name (default: "<dataset_type>_validated.csv")
+  "output_name": "NEO_final.csv",      # optional -- output file/blob name (default: "<dataset_type>_final.csv")
   "output_path": "out/validated.csv",  # optional -- write to this EXACT local path instead of via the storage backend
   "return_inline": false               # also include the validated CSV as base64 in the response
 }
 
 `input`/`reference` accept a bare "<container>/<blob_name>" string (e.g.
-"fmg-inbound/NEO.csv") when STORAGE_BACKEND=azure_blob is configured (see
-src/storage.py), a local file path otherwise, or inline
+"fmg-outbound/<dir>/NEO_enriched.csv") when STORAGE_BACKEND=azure_blob is
+configured (see src/storage.py), a local file path otherwise, or inline
 {"content_base64": ..., "filename": ...} for a transport with no shared
 filesystem or blob access. The output is written back through the same
-storage backend: with Blob storage, "fmg-inbound/..." input automatically
-writes to "fmg-outbound/<run_id>/<output_name>" -- the container's
-"inbound"/"outbound" swap is automatic, nothing about the target container
-needs to be specified. `output_path` bypasses that and writes to an exact
+storage backend, into the SAME directory the input was fetched from, using
+`output_name` as the final filename -- e.g. input
+"fmg-outbound/<dir>/NEO_enriched.csv" writes to
+"fmg-outbound/<dir>/NEO_final.csv". The container may still change (the
+container's "inbound"/"outbound" swap is automatic when the input container
+matches that naming; otherwise output goes to that same container) --
+nothing about the target location needs to be specified beyond
+`output_name`. `output_path` bypasses all of this and writes to an exact
 local path instead (used by main.py's CLI).
 
 Handoff shape from the upstream enrichment/matching step is also accepted
@@ -210,8 +214,11 @@ def run_validation_agent(request: dict) -> dict:
             write_rows(output_path, output_rows)
             response["output_csv_path"] = output_path
         else:
-            output_name = request.get("output_name") or f"{dataset_type}_validated.csv"
-            response["output_csv_path"] = storage.write_rows(output_rows, output_name, run_id)
+            # Same directory the input was fetched from, e.g. input
+            # "fmg-outbound/<dir>/NEO_enriched.csv" -> output
+            # "fmg-outbound/<dir>/NEO_final.csv" -- see src/storage.py.
+            output_name = request.get("output_name") or f"{dataset_type}_final.csv"
+            response["output_csv_path"] = storage.write_rows(output_rows, output_name)
 
         if request.get("return_inline"):
             response["output_csv_base64"] = rows_to_csv_base64(output_rows)
